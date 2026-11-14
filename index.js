@@ -26,6 +26,7 @@ const connectedClient = await connectToMongoDB();
 const database = connectedClient.db("hireloopdb");
 const users = database.collection("user");
 const jobs = database.collection("jobs");
+const applications = database.collection("applications");
 
 app.get("/users", async (req, res) => {
   const cursor = await users.find({}).toArray();
