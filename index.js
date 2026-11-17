@@ -2,6 +2,9 @@ import express from "express";
 import cors from "cors";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
+import Stripe from "stripe";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -27,47 +30,55 @@ const database = connectedClient.db("hireloopdb");
 const users = database.collection("user");
 const jobs = database.collection("jobs");
 const applications = database.collection("applications");
+const payments = database.collection("payments");
 
 app.get("/users", async (req, res) => {
   const cursor = await users.find({}).toArray();
   res.send(cursor);
 });
 
-// jobs related apis
-app.get('/jobs', async (req, res) => {
-    const query = {};
-    // console.log('query', req.query);
-    if (req.query) {
-        if (req.query.jobType) {
-            query.jobType = req.query.jobType;
-        }
-        if (req.query.isRemote) {
-            query.isRemote = req.query.isRemote === 'true';
-        }
-        if (req.query.category) {
-            query.category = req.query.category;
-        }
-        if (req.query.search) {
-            query.$or = [
-                { title: { $regex: req.query.search, $options: 'i' } },
-                { company: { $regex: req.query.search, $options: 'i' } },
-                { responsibilities: { $regex: req.query.search, $options: 'i' } },
-                { requirements: { $regex: req.query.search, $options: 'i' } }
-            ];
-        }
-    }
+app.get("/users/:id/premium", async (req, res) => {
+  const { id } = req.params;
+  const query = { _id: new ObjectId(id) };
+  const result = await users.findOne(query, { projection: { premium: 1 } });
+  res.send(result);
+});
 
-    const cursor = jobs.find(query);
-    const result = await cursor.toArray();
-    res.send(result);
-})
+// jobs related apis
+app.get("/jobs", async (req, res) => {
+  const query = {};
+  // console.log('query', req.query);
+  if (req.query) {
+    if (req.query.jobType) {
+      query.jobType = req.query.jobType;
+    }
+    if (req.query.isRemote) {
+      query.isRemote = req.query.isRemote === "true";
+    }
+    if (req.query.category) {
+      query.category = req.query.category;
+    }
+    if (req.query.search) {
+      query.$or = [
+        { title: { $regex: req.query.search, $options: "i" } },
+        { company: { $regex: req.query.search, $options: "i" } },
+        { responsibilities: { $regex: req.query.search, $options: "i" } },
+        { requirements: { $regex: req.query.search, $options: "i" } },
+      ];
+    }
+  }
+
+  const cursor = jobs.find(query);
+  const result = await cursor.toArray();
+  res.send(result);
+});
 
 app.get(`/jobs/:id`, async (req, res) => {
-    const {id} = req.params;
-    const query = { _id: new ObjectId(id) };
-    const result = await jobs.findOne(query);
-    res.send(result);
-})
+  const { id } = req.params;
+  const query = { _id: new ObjectId(id) };
+  const result = await jobs.findOne(query);
+  res.send(result);
+});
 
 app.post("/jobs", async (req, res) => {
   const job = req.body;
@@ -76,41 +87,92 @@ app.post("/jobs", async (req, res) => {
 });
 
 app.delete("/jobs/:id", async (req, res) => {
-  const {id} = req.params;
+  const { id } = req.params;
   const query = { _id: new ObjectId(id) };
   const result = await jobs.deleteOne(query);
   res.send(result);
 });
 
-
 // applications related apis
-app.get('/applications', async (req, res) => {
-    const query = {};
+app.get("/applications", async (req, res) => {
+  const query = {};
 
-    if (req.query.applicantId) {
-        query.userId = req.query.applicantId;
+  if (req.query.applicantId) {
+    query.userId = req.query.applicantId;
+  }
+
+  const cursor = applications.find(query);
+  const result = await cursor.toArray();
+  res.send(result);
+});
+
+app.get("/applications/count", async (req, res) => {
+  const query = {};
+  if (req.query.applicantId) {
+    query.userId = req.query.applicantId;
+  }
+  const result = await applications.countDocuments(query);
+  res.send({ count: result });
+});
+
+app.post("/applications", async (req, res) => {
+  const application = req.body;
+  const result = await applications.insertOne(application);
+  res.send(result);
+});
+
+app.post("/payments/checkout-verify", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).send({ success: false, message: "Session ID is required" });
     }
 
-    const cursor = applications.find(query);
-    const result = await cursor.toArray();
-    res.send(result);
-})
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const { status, payment_status, customer_email, metadata, payment_intent } = session;
 
-app.get('/applications/count', async (req, res) => {
-    const query = {};
-    if (req.query.applicantId) {
-        query.userId = req.query.applicantId;
+    if (status === "complete" && payment_status === "paid") {
+      const sessionQuery = { sessionId };
+      const existingPayment = await payments.findOne(sessionQuery);
+      if (existingPayment) {
+        return res.send({ success: true, message: "Payment already verified", payment: existingPayment });
+      }
+
+      const payment = {
+        sessionId,
+        status,
+        payment_status,
+        customer_email,
+        userId: metadata?.userId,
+        payment_date: new Date(),
+        payment_intent,
+      };
+
+      const result = await payments.insertOne(payment);
+
+      let updateResult = null;
+      if (metadata?.userId && ObjectId.isValid(metadata.userId)) {
+        const query = { _id: new ObjectId(metadata.userId) };
+        const updatedDoc = {
+          $set: {
+            premium: true,
+          },
+        };
+        updateResult = await users.updateOne(query, updatedDoc);
+      }
+
+      return res.send({ success: true, result, updateResult });
     }
-    const result = await applications.countDocuments(query);
-    res.send({count: result});
-})
 
-app.post('/applications', async (req, res) => {
-    const application = req.body;
-    const result = await applications.insertOne(application);
-    res.send(result);
-})
-
+    return res.status(400).send({ success: false, message: "Payment verification failed" });
+  } catch (error) {
+    return res.status(500).send({
+      success: false,
+      message: error instanceof Error ? error.message : "Internal server error",
+    });
+  }
+});
 
 app.get("/", (req, res) => {
   res.send("Hello World!");
