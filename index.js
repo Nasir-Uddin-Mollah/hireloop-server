@@ -44,6 +44,18 @@ app.get("/users/:id/premium", async (req, res) => {
   res.send(result);
 });
 
+app.patch("/users/:id/role", async (req, res) => {
+  const {id} = req.params;
+  const query = { _id: new ObjectId(id) };
+  const updatedDoc = {
+    $set: {
+      role: req.body.role,
+    },
+  };
+  const result = await users.updateOne(query, updatedDoc);
+  res.send(result);
+});
+
 // jobs related apis
 app.get("/jobs", async (req, res) => {
   const query = {};
@@ -129,7 +141,7 @@ app.post("/applications", async (req, res) => {
 });
 
 app.patch("/applications/:id", async (req, res) => {
-  const {id} = req.params;
+  const { id } = req.params;
   const query = { _id: new ObjectId(id) };
   const updatedDoc = {
     $set: {
