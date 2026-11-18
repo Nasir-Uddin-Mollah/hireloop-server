@@ -58,6 +58,9 @@ app.get("/jobs", async (req, res) => {
     if (req.query.category) {
       query.category = req.query.category;
     }
+    if (req.query.recruiterId) {
+      query.recruiterId = req.query.recruiterId;
+    }
     if (req.query.search) {
       query.$or = [
         { title: { $regex: req.query.search, $options: "i" } },
@@ -101,6 +104,10 @@ app.get("/applications", async (req, res) => {
     query.userId = req.query.applicantId;
   }
 
+  if (req.query.jobId) {
+    query.jobId = req.query.jobId;
+  }
+
   const cursor = applications.find(query);
   const result = await cursor.toArray();
   res.send(result);
@@ -121,22 +128,41 @@ app.post("/applications", async (req, res) => {
   res.send(result);
 });
 
+app.patch("/applications/:id", async (req, res) => {
+  const {id} = req.params;
+  const query = { _id: new ObjectId(id) };
+  const updatedDoc = {
+    $set: {
+      status: req.body.status,
+    },
+  };
+  const result = await applications.updateOne(query, updatedDoc);
+  res.send(result);
+});
+
 app.post("/payments/checkout-verify", async (req, res) => {
   try {
     const { sessionId } = req.body;
 
     if (!sessionId) {
-      return res.status(400).send({ success: false, message: "Session ID is required" });
+      return res
+        .status(400)
+        .send({ success: false, message: "Session ID is required" });
     }
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    const { status, payment_status, customer_email, metadata, payment_intent } = session;
+    const { status, payment_status, customer_email, metadata, payment_intent } =
+      session;
 
     if (status === "complete" && payment_status === "paid") {
       const sessionQuery = { sessionId };
       const existingPayment = await payments.findOne(sessionQuery);
       if (existingPayment) {
-        return res.send({ success: true, message: "Payment already verified", payment: existingPayment });
+        return res.send({
+          success: true,
+          message: "Payment already verified",
+          payment: existingPayment,
+        });
       }
 
       const payment = {
@@ -165,7 +191,9 @@ app.post("/payments/checkout-verify", async (req, res) => {
       return res.send({ success: true, result, updateResult });
     }
 
-    return res.status(400).send({ success: false, message: "Payment verification failed" });
+    return res
+      .status(400)
+      .send({ success: false, message: "Payment verification failed" });
   } catch (error) {
     return res.status(500).send({
       success: false,
