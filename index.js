@@ -31,11 +31,71 @@ const users = database.collection("user");
 const jobs = database.collection("jobs");
 const applications = database.collection("applications");
 const payments = database.collection("payments");
+const sessions = database.collection("session");
 
-app.get("/users", async (req, res) => {
-  const cursor = await users.find({}).toArray();
-  res.send(cursor);
-});
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+  const token = authHeader.split(" ")[1];
+  if (!token) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const query = { token };
+  const session = await sessions.findOne(query);
+  if (!session) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  const { userId } = session;
+
+  const userQuery = { _id: new ObjectId(userId) };
+  const user = await users.findOne(userQuery);
+  if (!user) {
+    res.status(401).send({ message: "Unauthorized" });
+    return;
+  }
+
+  req.user = user;
+  next();
+};
+
+// must call this middleware after verifyToken
+const verifySeeker = async (req, res, next) => {
+    if (req.user.role !== 'seeker') {
+        res.status(403).send({ message: 'Forbidden' });
+        return;
+    }
+    next();
+}
+
+const verifyRecruiter = async (req, res, next) => {
+    if (req.user.role !== 'recruiter') {
+        res.status(403).send({ message: 'Forbidden' });
+        return;
+    }
+    next();
+}
+
+const verifyAdmin = async (req, res, next) => {
+    if (req.user.role !== 'admin') {
+        res.status(403).send({ message: 'Forbidden' });
+        return;
+    }
+    next();
+}
+
+// users related apis
+app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
+    const cursor = users.find({});
+    const result = await cursor.toArray();
+    res.send(result);
+})
 
 app.get("/users/:id/premium", async (req, res) => {
   const { id } = req.params;
@@ -44,8 +104,8 @@ app.get("/users/:id/premium", async (req, res) => {
   res.send(result);
 });
 
-app.patch("/users/:id/role", async (req, res) => {
-  const {id} = req.params;
+app.patch("/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
   const query = { _id: new ObjectId(id) };
   const updatedDoc = {
     $set: {
@@ -95,7 +155,7 @@ app.get(`/jobs/:id`, async (req, res) => {
   res.send(result);
 });
 
-app.post("/jobs", async (req, res) => {
+app.post("/jobs", verifyToken, verifyRecruiter, async (req, res) => {
   const job = req.body;
   const result = await jobs.insertOne(job);
   res.send(result);
@@ -109,7 +169,7 @@ app.delete("/jobs/:id", async (req, res) => {
 });
 
 // applications related apis
-app.get("/applications", async (req, res) => {
+app.get("/applications", verifyToken, async (req, res) => {
   const query = {};
 
   if (req.query.applicantId) {
@@ -117,6 +177,15 @@ app.get("/applications", async (req, res) => {
   }
 
   if (req.query.jobId) {
+    const jobQuery = { _id: new ObjectId(req.query.jobId) };
+    const job = await jobs.findOne(jobQuery);
+    if (
+      job.recruiterId !== req.user._id.toString() &&
+      req.user.role !== "admin"
+    ) {
+      res.status(403).send({ message: "Forbidden" });
+      return;
+    }
     query.jobId = req.query.jobId;
   }
 
@@ -134,7 +203,7 @@ app.get("/applications/count", async (req, res) => {
   res.send({ count: result });
 });
 
-app.post("/applications", async (req, res) => {
+app.post("/applications", verifyToken, verifySeeker, async (req, res) => {
   const application = req.body;
   const result = await applications.insertOne(application);
   res.send(result);
@@ -163,8 +232,7 @@ app.post("/payments/checkout-verify", async (req, res) => {
     }
 
     const session = await stripe.checkout.sessions.retrieve(sessionId);
-    const { status, payment_status, customer_email, metadata, payment_intent } =
-      session;
+    const { status, payment_status, customer_email, metadata, payment_intent } = session;
 
     if (status === "complete" && payment_status === "paid") {
       const sessionQuery = { sessionId };
@@ -221,3 +289,6 @@ app.get("/", (req, res) => {
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
 });
+
+
+export default app;
